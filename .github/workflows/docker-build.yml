@@ -1,75 +1,94 @@
-name: Build and Publish Docker
+# https://docs.github.com/en/actions/using-workflows/workflow-syntax-for-github-actions
 
+name: Build and Publish Docker Images
+
+# Build events
 on:
-  # Run when pushes to branch or create new Tag
+  # On push event
   push:
+    # Any branch
     branches:
       - '*'
+    # Ignore updates to paths
     paths-ignore:
       - 'docs/**'
       - '*.md'
+  # On create event
   create:
+    # Any tags
     tags:
       - '*'
+  # On pull requests
+  pull_request:
+    # PR to main branch only, used to verify that pull requests can be merged
+    # https://docs.github.com/articles/defining-the-mergeability-of-pull-requests/
+    # Pull requests will be built but not pushed
+    # TODO: Rename master to main, https://github.com/github/renaming
+    branches: 
+      - 'main'
+      - 'master'
+  # Manually trigger from Actions web UI
+  workflow_dispatch:
+  # TODO: Scheduled updates to pick up upstream fixes
+  # schedule:
+    # Rebuild with latest upstream updates every Monday 2am
+    #- cron: '0 2 * * MON'
 
+# Build jobs
 jobs:
-  # define job to build and publish docker image
+
+  # Build image and push to registry
   build-and-push-docker-image:
-    name: Build Docker image and push to repositories
-    # run only when code is compiling and tests are passing
+    name: Build Docker Image and Push to Container Registry
     runs-on: ubuntu-latest
 
-    # steps to perform in job
+    # Build steps
     steps:
-      - name: Checkout code
+
+      # https://github.com/actions/checkout
+      - name: Checkout Code
         uses: actions/checkout@v2
 
+      # https://github.com/docker/setup-qemu-action
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v1
         
-      # setup Docker buld action
-      - name: Set up Docker Buildx
-        id: buildx
+      # https://github.com/docker/setup-buildx-action
+      - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v1
 
+      # https://github.com/marketplace/actions/docker-login
       - name: Login to DockerHub
         uses: docker/login-action@v1
         with:
+          # https://docs.github.com/en/actions/security-guides/encrypted-secrets
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Extract branch name
-        shell: bash
+      # Dynamically create Docker Hub registry name from secrets.DOCKERHUB_USERNAME/github.event.repository.name
+      # TODO: This will only work if the forked repo name uses the same project name in Docker Hub, prefer to use a secret for configuration instead
+      # E.g. ${{ secrets.DOCKERHUB_PROJECT }}
+      - name: Create Docker Registry Name
         run: |
-          TAG="latest"
-          case $GITHUB_REF in refs/heads/*)
-          TAG=${GITHUB_REF#refs/heads/};;
-          esac
+          echo ::set-env name=IMAGE_REPOSITORY::$(echo ${{ secrets.DOCKERHUB_USERNAME }}/${{ github.event.repository.name }} | tr '[:upper:]' '[:lower:]')
 
-          case $GITHUB_REF in refs/tags/*)
-          TAG=${GITHUB_REF#refs/tags/};
-          esac
-
-          echo "##[set-output name=branch;]$TAG"
-        id: extract_branch
-
-      - name: PrepareReg Names
-        shell: bash
-        run: echo IMAGE_REPOSITORY=$(echo ${{ github.repository_owner }} | tr '[:upper:]' '[:lower:]') >> $GITHUB_ENV
-        id: extract_repository
-
-      - name: Build image and push to Docker Hub 
-        uses: docker/build-push-action@v2
+      # https://github.com/marketplace/actions/build-and-push-docker-images
+      - name: Build Image and Push to Docker Hub 
+        uses: docker/build-push-action@v3
         with:
-          # relative path to the place where source code with Dockerfile is located
+          # Make sure that .dockerignore excludes everything that is not required to build
           context: .
           file: ./Docker/Dockerfile
-          # Note: tags has to be all lower-case
-          platforms: linux/amd64,linux/arm64,linux/arm/v7
-          tags: ${{ env.IMAGE_REPOSITORY }}/fpp:${{ steps.extract_branch.outputs.branch }},${{ env.IMAGE_REPOSITORY }}/fpp:latest
-          push: true
-          cache-from: type=registry,ref=${{ env.IMAGE_REPOSITORY }}/fpp:master
-          cache-to: type=inline
-
-      - name: Image digest
-        run: echo ${{ steps.docker_build.outputs.digest }}
+          # Do not push pull requests that are used to test PR's
+          push: ${{ (github.event_name != 'pull_request') }}
+          platforms: |
+            linux/amd64
+            linux/arm64
+            linux/arm/v7
+          # TODO: Do not always tag latest, it means any build from any branch that is pushing will overwrite the latest tag
+          tags: |
+            ${{ env.IMAGE_REPOSITORY }}:${{ github.ref_name }}
+            ${{ env.IMAGE_REPOSITORY }}:latest
+          # TODO: Set build version in docker labels, use SHA for now
+          build-args: |
+            LABEL_VERSION=${{ github.sha }}
