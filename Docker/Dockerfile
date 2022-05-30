@@ -1,18 +1,24 @@
 # TODO:
-# The "docker way" is to update the container image, never code from inside the container.
-# There is no need for build tools or runtime update support inside the container.
-
+# - FPP ignores TZ environment variable when doing initial setup.
+#   Default to the TZ as set in environment variables from docker.
+# - Use environemnt variables for compelte config, no need to run initial config on boot.
+# - The "docker way" is to update the container image, never code from inside the container.
+#   There is no need for build tools or runtime update support inside the container.
+#   Disable automatic updates when running in docker.
+# - Publish compiled binaries for direct consumption in embedded devices.
+# - Trim down installed packages to only current and in use.
+# - Be explicit with packge selection and use --no-install-recommends.
 
 # Test in docker shell:
 # docker run -it --rm debian:bullseye /bin/bash
 # export DEBIAN_FRONTEND=noninteractive
 
 # Test Docker build:
-# docker build ./Docker
-# docker build --no-cache ./Docker
+# docker build -t fpp_dev_test --file ./Docker/Dockerfile .
+# docker build -t fpp_dev_test --no-cache --file ./Docker/Dockerfile .
 
 
-# We are building in multiple stages to minimize the final image size
+# Building in multiple stages ot multiple layers
 # https://docs.docker.com/develop/develop-images/multistage-build/
 
 
@@ -21,26 +27,23 @@
 FROM debian:bullseye AS base
 
 # Set default timezone to UTC
-# TODO: FPP config ignores TZ when doing initial setup
 ENV TZ=Etc/UTC
 
 # Prevent EULA and confirmation prompts in installers
 ARG DEBIAN_FRONTEND=noninteractive
 
-# Install utilitites and configure locale
 RUN \
-    && apt-get update \
+    # Upgrade packages
+    apt-get update \
     && apt-get upgrade -y \
-    && apt-get install -y --no-install-recommends \
+    && apt-get install -y \
         locales \
         locales-all \
+    # Testing
         mc \
         nano \
     # Generate UTF-8 locale
-    && locale-gen --no-purge en_US en_US.UTF-8 \
-    # Cleanup
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+    && locale-gen --no-purge en_US en_US.UTF-8
 
 # Set default locale to en_US.UTF-8
 ENV LANG=en_US.UTF-8 \
@@ -49,39 +52,56 @@ ENV LANG=en_US.UTF-8 \
 
 
 
-# VLC builder image
-FROM base AS vlcbuilder
+# Build tools image
+FROM base AS buildtools
 
-# Build and install VLC
-# https://wiki.videolan.org/Category:Building/
-# https://wiki.videolan.org/UnixCompile/
+# Install common build tools
 RUN \
-    # Add sources
+    # Add source repos by converting deb to deb-src from default sources file
     cp /etc/apt/sources.list /etc/apt/sources.list.d/sources-src.list \
     && sed -i 's|deb http|deb-src http|g' /etc/apt/sources.list.d/sources-src.list \
     && apt-get update \
-    && apt-get upgrade -y \
-    # Install VLC prerequisites
-    && apt-get install -y --no-install-recommends \
+    && apt-get install -y \
         git \
         g++ \
         make \
         libtool \
         automake \
+        pkg-config \
+        flex \
+        bison
+
+
+
+# VLC builder image
+FROM buildtools AS vlcbuilder
+
+# Invalidate cache when git changes
+# https://code.videolan.org/api/v4/projects/ -> 2516
+ADD https://code.videolan.org/api/v4/projects/2516/repository/tags/ version.json
+
+# Build VLC
+# https://code.videolan.org/videolan/vlc
+# https://wiki.videolan.org/Category:Building/
+# https://wiki.videolan.org/UnixCompile/
+RUN \
+    # Install prerequisites
+    apt-get install -y \
+        automake \
         autopoint \
+        git \
+        g++ \
+        make \
+        libtool \
         pkg-config \
         flex \
         bison \
+        flex \
+        bison \
         lua5.2 \
-    # Cleanup
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
-
-# Build VLC
-RUN \
     # Clone git repo
     && cd /opt \
-    && git clone git://git.videolan.org/vlc.git \
+    && git clone https://code.videolan.org/videolan/vlc.git \
     && cd vlc \
     # Bootstrap
     && ./bootstrap \
@@ -145,6 +165,8 @@ RUN \
         --disable-wayland \
         --disable-xcb \
         --enable-run-as-root \
+        # use /builder for output so we can copy from layer
+        --prefix=/builder \
     # Make and install
     && make install \
     # Configure runtime bindings
@@ -152,30 +174,44 @@ RUN \
     # Cleanup
     && make clean \
     && cd ~ \
-    && rm -rf /opt/vlc \
+    && rm -rf /opt/vlc
     # Print VLC version info
-    && vlc --version
+    # && vlc --version
 
 
-# Build and install libhttpserver
-# https://github.com/etr/libhttpserver
-# https://github.com/etr/libhttpserver#building
+
+# libhttpserver builder image
+FROM buildtools AS libhttpbuilder
 
 # Use version 0.18.2
 ENV LIBHTTPSERVER_VER="0.18.2"
 
+# Invalidate cache when git changes
+ADD "https://api.github.com/repos/etr/libhttpserver/git/refs/tags/${LIBHTTPSERVER_VER}" version.json
+
+# Build libhttpserver
+# https://github.com/etr/libhttpserver
+# https://github.com/etr/libhttpserver#building
 RUN \
+    # Install prerequisites
+    apt-get install -y \
+        automake \
+        autopoint \
+        git \
+        g++ \
+        gnutls-bin \
+        libmicrohttpd-dev \
+        make \
     # Clone git repo
     && cd /opt \
-    && git clone https://github.com/etr/libhttpserver.git \
+    && git clone -b "${LIBHTTPSERVER_VER}" https://github.com/etr/libhttpserver.git \
     && cd libhttpserver \
-    && git checkout ${LIBHTTPSERVER_VER} \
     # Bootstrap
     && ./bootstrap \
     && mkdir build \
     && cd build \
-    # Configure, use /usr
-    && ../configure --prefix=/usr \
+    # Configure, use /builder for output so we can copy from layer
+    && ../configure --prefix=/builder \
     # Make and install
     && make install \
     # Cleanup        
@@ -183,18 +219,22 @@ RUN \
     && rm -rf /opt/libhttpserver
 
 
-# Build and install FPP
 
-#RUN yes | /root/FPP_Install.sh --skip-apt-install --skip-vlc \
-#    && rm -rf /tmp/* \
-#    && cp /opt/fpp/etc/asoundrc.plain /root/.asoundrc
+# FPP builder image
+FROM buildtools AS fppbuilder
 
-# Install FPP prerequisites
-# TODO: Create a master list of files to install and remove
+# Copy content from build layers
+COPY --from=vlcbuilder /builder /usr
+COPY --from=libhttpbuilder /builder /usr
+
+# Copy source from git root context to image
+COPY . /opt/fpp/
+
+# Build FPP
 RUN \
-    && apt-get update \
-    && apt-get upgrade -y \
-    && apt-get install -y --no-install-recommends \
+    # Install FPP prerequisites
+    apt-get install -y \
+        # TODO: This is the complete list from the combined scripts, trim trim trim
         alsa-utils \
         apache2 \
         apache2-bin \
@@ -290,8 +330,8 @@ RUN \
         php-zip \
         pkg-config \
         rsync \
-        # samba \
-        # samba-common-bin \
+        samba \
+        samba-common-bin \
         shellinabox \
         software-properties-common \
         sqlite3 \
@@ -311,35 +351,13 @@ RUN \
         x265 \
         zip \
         zstd \
-    # Cleanup
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
-
-# TODO: Configure PHP
-# TODO: Configure Apache
-
-# Set FPP versions, to be updated at build time
-ARG FPPIMAGEVER="2022-05" \
-    FPPCFGVER="71"
-
-# Create config dir and write versions to config
-RUN \
-    mkdir -p /etc/fpp \
-    echo "docker" > /etc/fpp/platform \
-    echo "v${FPPIMAGEVER}" > /etc/fpp/rfs_version \
-    echo "${FPPCFGVER}" > /etc/fpp/config_version
-
-# Copy source from context to image
-# COPY SD/FPP_Install.sh /root/FPP_Install.sh
-COPY ./ /opt/fpp/
-
-# Build FPP
-RUN \
-    cd /opt/fpp/src/ \
-    make optimized
+    && cd /opt/fpp/src/ \
+    && mkdir -p /usr/bin/fpp 
+    # && make optimized
 
 
 
+# FPP runtime image
 FROM base AS fpp
 
 # Image labels, version to be updated at build time
@@ -348,6 +366,37 @@ LABEL name="FPP" \
     version=${LABEL_VERSION} \
     description="Falcon Player" \
     maintainer="Falcon Christmas <fpp@users.noreply.github.com>"
+
+# Set FPP versions, to be updated at build time
+ARG FPPPLATFORM="docker:debian:bullseye" \
+    FPPIMAGEVER="2022-05" \
+    FPPCFGVER="71"
+
+
+# TODO: Configure PHP
+# TODO: Configure Apache
+
+# Copy content from build layers
+COPY --from=vlcbuilder /builder /usr
+COPY --from=libhttpbuilder /builder /usr
+#COPY --from=fppbuilder /usr/bin/fpp /usr/bin/fpp
+
+RUN \
+    # Install prerequisites
+    apt-get install -y \
+        apache2 \
+        mosquitto \
+        php \
+    # Create FPP version configs
+    && mkdir -p /etc/fpp \
+    && echo "${FPPPLATFORM}" > /etc/fpp/platform \
+    && echo "v${FPPIMAGEVER}" > /etc/fpp/rfs_version \
+    && echo "${FPPCFGVER}" > /etc/fpp/config_version \
+    # Create media directory
+    && mkdir -p "/home/fpp/media" \
+    # Cleanup
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
 # Exposed ports
 # HTTP Web UI

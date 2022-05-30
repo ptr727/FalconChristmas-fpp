@@ -1,0 +1,108 @@
+# Docker build:
+# docker build -t fpp_dev_test --file ./Docker/Dockerfile.test .
+# docker build -t fpp_dev_test --no-cache --file ./Docker/Dockerfile.test .
+
+# Run shell:
+# docker run -it --rm fpp_dev_test /bin/bash
+# export DEBIAN_FRONTEND=noninteractive
+
+FROM debian:bullseye
+
+ARG DEBIAN_FRONTEND=noninteractive
+
+RUN \
+    cp /etc/apt/sources.list /etc/apt/sources.list.d/sources-src.list \
+    && sed -i 's|deb http|deb-src http|g' /etc/apt/sources.list.d/sources-src.list \
+    && apt-get update \
+    && apt-get upgrade -y \
+    && apt-get install -y \
+        automake \
+        autopoint \
+        git \
+        g++ \
+        make \
+        libtool \
+        pkg-config \
+        flex \
+        bison \
+        flex \
+        bison \
+        lua5.2 \
+        mc \
+    # Clone git repo
+    && cd /opt \
+    && git clone git://git.videolan.org/vlc.git \
+    && cd vlc \
+    # Bootstrap
+    && ./bootstrap \
+    # Get build dependencies, requires deb-src entries in sources.list
+    && apt-get build-dep -y vlc \
+    # Configure
+    && ./configure \
+        --disable-a52 \
+        --disable-addonmanagermodules \
+        --disable-aom \
+        --disable-aribb25 \
+        --disable-aribsub \
+        --disable-avahi \
+        --disable-bluray \
+        --disable-libcddb \
+        --disable-chromecast \
+        --disable-chromaprint  \
+        --disable-dbus \
+        --disable-decklink \
+        --disable-dc1394 \
+        --disable-dv1394 \
+        --disable-dsm \
+        --disable-dvdread \
+        --disable-dvdnav \
+        --disable-ebur128 \
+        --disable-jack \
+        --disable-fluidlite \
+        --disable-fluidsynth \
+        --disable-freerdp \
+        --disable-gles2 \
+        --disable-goom \
+        --disable-gst-decode \
+        --disable-kms \
+        --disable-linsys \
+        --disable-live555 \
+        --disable-lua \
+        --disable-macosx-avfoundation \
+        --disable-medialibrary \
+        --disable-microdns \
+        --disable-mfx \
+        --disable-mmal \
+        --disable-nfs \
+        --disable-opencv \
+        --disable-projectm \
+        --disable-rav1e \
+        --disable-rnnoise \
+        --disable-sid \
+        --disable-schroedinger \
+        --disable-screen \
+        --disable-sftp \
+        --disable-shout \
+        --disable-smb2 \
+        --disable-smbclient \
+        --disable-pulse \
+        --disable-qt \
+        --disable-skins2 \
+        --disable-srt \
+        --disable-v4l2 \
+        --disable-vcd \
+        --disable-vnc \
+        --disable-wayland \
+        --disable-xcb \
+        --enable-run-as-root \
+        --prefix=/builder \
+    # Make and install
+    && make install \
+    # Configure runtime bindings
+    && ldconfig \
+    # Cleanup
+    && make clean \
+    && cd ~ \
+    && rm -rf /opt/vlc \
+    # Print VLC version info
+    # && vlc --version
