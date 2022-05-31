@@ -8,6 +8,10 @@
 # - Publish compiled binaries for direct consumption in embedded devices.
 # - Trim down installed packages to only current and in use.
 # - Be explicit with packge selection and use --no-install-recommends.
+# - After compiling FPP move the binaries to e.g ./usr/bin/fpp.
+#   We want to delete the source and only keep the binaries.
+# - Use using FIND_PATH/FIND_LIBRARY to find the correct path for VLC and libhttpserver.
+#   The path is assumed to be /usr/local/ while normally the path would be /usr.
 
 # Test in docker shell:
 # docker run -it --rm debian:bullseye /bin/bash
@@ -224,10 +228,12 @@ RUN \
 FROM buildtools AS fppbuilder
 
 # Copy content from build layers
-COPY --from=vlcbuilder /builder /usr
-COPY --from=libhttpbuilder /builder /usr
+# TODO: Why /user/local vs. /usr, consider using FIND_PATH/FIND_LIBRARY
+COPY --from=vlcbuilder /builder /usr/local
+COPY --from=libhttpbuilder /builder /usr/local
 
 # Copy source from git root context to image
+# Make sure that .git is not in .gitignore as the build uses "git describe" to get the version info
 COPY . /opt/fpp/
 
 # Build FPP
@@ -294,6 +300,7 @@ RUN \
         libgraphicsmagick++1-dev \
         libiio-utils \
         libjsoncpp-dev \
+        liblog4cpp5-dev \
         libmicrohttpd-dev \
         libmosquitto-dev \
         libsdl2-dev \
@@ -352,8 +359,8 @@ RUN \
         zip \
         zstd \
     && cd /opt/fpp/src/ \
-    && mkdir -p /usr/bin/fpp 
-    # && make optimized
+    && mkdir -p /usr/bin/fpp \
+    && make optimized
 
 
 
